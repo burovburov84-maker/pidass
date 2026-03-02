@@ -9,13 +9,17 @@ import os
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.moderation = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # ID из вашего сервера
 TICKET_PANEL_CHANNEL_ID = 1477835412012793856  # Канал для панели
 TICKET_CATEGORY_ID = 1477835280315842792      # Категория для тикетов
-GUILD_ID = 1477729837597720604  # ID вашего сервера (нужно заменить на реальный)
+GUILD_ID = 1477729837597720604  # ID вашего сервера
+
+# КАНАЛ ДЛЯ НАКАЗАНИЙ
+PUNISHMENT_CHANNEL_ID = 1477829936516694156  # Канал куда писать о наказаниях
 
 # Роли персонала
 STAFF_ROLES = [
@@ -25,19 +29,246 @@ STAFF_ROLES = [
     1477827889557672106,  
     1477729837597720607,  # Роль для приема заявок
     1477828744390512711,  # Роль для приема заявок
+    1478170909436022924,  # Новая роль
+]
+
+# Роли для модерации (кто может использовать команды)
+MOD_ROLES = [
+    1477827889557672106,  # Модератор
+    1477828744390512711,  # Роль 1
+    1477729837597720607,  # Роль 2
+    1477828939551473786,  # Администратор
+    1478170909436022924,  # Новая роль
 ]
 
 # Роль при принятии заявки
 APPLICANT_ROLE_ID = 1477845619874856991
 
-# Роли для приема заявок (только эти могут принимать/отклонять)
+# Роли для приема заявок
 APPLICATION_MANAGER_ROLES = [
-    1477729837597720607,  # Роль для приема заявок
-    1477828744390512711,  # Роль для приема заявок
+    1477729837597720607,
+    1477828744390512711,
 ]
+
+# Канал для логов
+LOG_CHANNEL_ID = None  # Будет установлено через команду !logs
 
 # Хранилище активных тикетов
 active_tickets = {}
+
+# ========== СИСТЕМА ЛОГОВ ==========
+async def log_action(ctx, action: str, target: discord.Member, reason: str, duration: str = None):
+    """Логирование наказаний в специальный канал"""
+    global LOG_CHANNEL_ID
+    
+    punishment_channel = ctx.guild.get_channel(PUNISHMENT_CHANNEL_ID)
+    if not punishment_channel:
+        return
+    
+    # Определяем цвет в зависимости от действия
+    colors = {
+        "MUTE": discord.Color.orange(),
+        "BAN": discord.Color.dark_red(),
+        "WARN": discord.Color.yellow(),
+        "UNMUTE": discord.Color.green()
+    }
+    color = colors.get(action, discord.Color.blue())
+    
+    # Создаем embed для канала наказаний
+    embed = discord.Embed(
+        title=f"{self.get_action_emoji(action)} {action}",
+        color=color,
+        timestamp=datetime.datetime.now()
+    )
+    embed.add_field(name="👤 Нарушитель", value=f"{target.mention} ({target.name})", inline=False)
+    embed.add_field(name="🛡️ Модератор", value=f"{ctx.author.mention} ({ctx.author.name})", inline=False)
+    embed.add_field(name="📝 Причина", value=reason, inline=False)
+    
+    if duration:
+        embed.add_field(name="⏰ Срок", value=duration, inline=True)
+    
+    embed.set_footer(text=f"ID нарушителя: {target.id}")
+    
+    await punishment_channel.send(embed=embed)
+    
+    # Отправляем в ЛС нарушителю
+    try:
+        user_embed = discord.Embed(
+            title=f"{self.get_action_emoji(action)} Вы получили {action.lower()}",
+            color=color,
+            timestamp=datetime.datetime.now()
+        )
+        user_embed.add_field(name="📝 Причина", value=reason, inline=False)
+        if duration:
+            user_embed.add_field(name="⏰ Срок", value=duration, inline=True)
+        user_embed.add_field(name="🛡️ Модератор", value=ctx.author.name, inline=False)
+        user_embed.set_footer(text=f"Сервер: {ctx.guild.name}")
+        
+        await target.send(embed=user_embed)
+    except:
+        pass  # Если нельзя отправить ЛС
+    
+    # Логируем в общий лог-канал если есть
+    if LOG_CHANNEL_ID:
+        log_channel = ctx.guild.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            log_embed = discord.Embed(
+                title=f"📋 {action}",
+                description=f"**Модератор:** {ctx.author.mention}\n**Нарушитель:** {target.mention}\n**Причина:** {reason}",
+                color=color
+            )
+            await log_channel.send(embed=log_embed)
+
+def get_action_emoji(action: str) -> str:
+    """Возвращает эмодзи для действия"""
+    emojis = {
+        "MUTE": "🔇",
+        "BAN": "🔨",
+        "WARN": "⚠️",
+        "UNMUTE": "🔊"
+    }
+    return emojis.get(action, "🔹")
+
+# ========== КОМАНДЫ ДЛЯ МОДЕРАЦИИ ==========
+def has_mod_role(ctx):
+    """Проверка наличия модераторской роли"""
+    for role_id in MOD_ROLES:
+        if ctx.author.get_role(role_id):
+            return True
+    return False
+
+@bot.command()
+@commands.check(has_mod_role)
+async def text(ctx, *, message: str):
+    """Отправить текст от имени бота и удалить команду"""
+    await ctx.send(message)
+    await ctx.message.delete()
+    
+    # Логируем в общий лог если есть
+    if LOG_CHANNEL_ID:
+        log_channel = ctx.guild.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            embed = discord.Embed(
+                title="💬 Текстовое сообщение",
+                description=f"**Отправитель:** {ctx.author.mention}\n**Сообщение:** {message}",
+                color=discord.Color.blue()
+            )
+            await log_channel.send(embed=embed)
+
+@bot.command()
+@commands.check(has_mod_role)
+async def mute(ctx, member: discord.Member, duration: str, *, reason: str = "Не указана"):
+    """Выдать мут участнику (формат: 10m, 1h, 1d)"""
+    # Конвертируем длительность
+    time_multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    unit = duration[-1]
+    if unit not in time_multipliers:
+        await ctx.send("❌ Неверный формат времени. Используйте: 10m, 1h, 1d")
+        return
+    
+    try:
+        time_value = int(duration[:-1])
+        seconds = time_value * time_multipliers[unit]
+    except:
+        await ctx.send("❌ Неверный формат времени")
+        return
+    
+    try:
+        # Выдаем мут
+        await member.timeout(discord.utils.utcnow() + datetime.timedelta(seconds=seconds), reason=reason)
+        
+        # Отправляем в канал где написали команду (краткое уведомление)
+        await ctx.send(f"✅ {member.mention} получил мут на {duration} по причине: {reason}")
+        
+        # Логируем в специальный канал и ЛС
+        await log_action(ctx, "MUTE", member, reason, duration)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка при выдаче мута: {str(e)}")
+
+@bot.command()
+@commands.check(has_mod_role)
+async def ban(ctx, member: discord.Member, *, reason: str = "Не указана"):
+    """Забанить участника"""
+    try:
+        await member.ban(reason=reason)
+        
+        # Краткое уведомление в текущий канал
+        await ctx.send(f"✅ {member.mention} забанен по причине: {reason}")
+        
+        # Логируем в специальный канал и ЛС
+        await log_action(ctx, "BAN", member, reason)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка при бане: {str(e)}")
+
+@bot.command()
+@commands.check(has_mod_role)
+async def warn(ctx, member: discord.Member, *, reason: str = "Не указана"):
+    """Выдать предупреждение участнику"""
+    
+    # Краткое уведомление в текущий канал
+    await ctx.send(f"⚠️ {member.mention} получил предупреждение по причине: {reason}")
+    
+    # Логируем в специальный канал и ЛС
+    await log_action(ctx, "WARN", member, reason)
+
+@bot.command()
+@commands.check(has_mod_role)
+async def unmute(ctx, member: discord.Member, *, reason: str = "Не указана"):
+    """Снять мут с участника"""
+    try:
+        await member.timeout(None, reason=reason)
+        
+        # Краткое уведомление в текущий канал
+        await ctx.send(f"✅ С {member.mention} снят мут по причине: {reason}")
+        
+        # Логируем
+        punishment_channel = ctx.guild.get_channel(PUNISHMENT_CHANNEL_ID)
+        if punishment_channel:
+            embed = discord.Embed(
+                title="🔊 UNMUTE",
+                color=discord.Color.green(),
+                timestamp=datetime.datetime.now()
+            )
+            embed.add_field(name="👤 Пользователь", value=f"{member.mention} ({member.name})", inline=False)
+            embed.add_field(name="🛡️ Модератор", value=f"{ctx.author.mention} ({ctx.author.name})", inline=False)
+            embed.add_field(name="📝 Причина", value=reason, inline=False)
+            await punishment_channel.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка при снятии мута: {str(e)}")
+
+@bot.command()
+async def logs(ctx, channel: discord.TextChannel = None):
+    """Привязать канал для логов (только для роли 1477729837597720607)"""
+    if not ctx.author.get_role(1477729837597720607):
+        await ctx.send("❌ У вас нет прав для использования этой команды!")
+        return
+    
+    global LOG_CHANNEL_ID
+    
+    if channel:
+        LOG_CHANNEL_ID = channel.id
+        await ctx.send(f"✅ Канал для логов установлен: {channel.mention}")
+        
+        test_embed = discord.Embed(
+            title="📋 Система логов активирована",
+            description="Все действия модераторов будут логироваться здесь.",
+            color=discord.Color.green()
+        )
+        await channel.send(embed=test_embed)
+    else:
+        LOG_CHANNEL_ID = None
+        await ctx.send("❌ Логи отключены. Укажите канал: !logs #канал")
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Обработка ошибок команд"""
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("❌ У вас нет прав для использования этой команды!")
+    else:
+        await ctx.send(f"❌ Ошибка: {str(error)}")
 
 # ========== КЛАССЫ ДЛЯ ЗАЯВЛЕНИЙ ==========
 class ApplicationModal(Modal):
@@ -60,7 +291,7 @@ class ApplicationModal(Modal):
         playtime = self.children[2].value
         reason = self.children[3].value
         
-        # Отправляем заявку админам с ролями 1477729837597720607 и 1477828744390512711
+        # Отправляем заявку админам
         await send_application_to_admins(interaction, self.position, name, age, playtime, reason)
         
         await interaction.followup.send("✅ Ваше заявление отправлено на рассмотрение!", ephemeral=True)
@@ -75,7 +306,6 @@ class ApplicationSelect(Select):
         super().__init__(placeholder="Выберите должность...", min_values=1, max_values=1, options=options)
     
     async def callback(self, interaction: discord.Interaction):
-        # Открываем модальное окно
         await interaction.response.send_modal(ApplicationModal(self.values[0]))
 
 class ApplicationView(View):
@@ -88,13 +318,11 @@ async def send_application_to_admins(interaction: discord.Interaction, position:
     """Отправка заявки админам в ЛС"""
     guild = interaction.guild
     
-    # Словарь для названий должностей
     position_names = {
         "media": "📹 Медиа-команда",
         "junior_moder": "🛡️ Младший модератор"
     }
     
-    # Создаем Embed с заявкой
     embed = discord.Embed(
         title="📨 Новая заявка в команду",
         color=discord.Color.purple(),
@@ -106,10 +334,8 @@ async def send_application_to_admins(interaction: discord.Interaction, position:
     embed.add_field(name="🎂 Возраст", value=age, inline=True)
     embed.add_field(name="⏰ На сервере", value=playtime, inline=True)
     embed.add_field(name="💭 Причина", value=reason, inline=False)
-    embed.add_field(name="🆔 Сервер", value=guild.name, inline=False)
     embed.set_footer(text="Нажмите кнопки ниже для принятия/отказа")
     
-    # Создаем кнопки для админов с информацией о сервере
     view = ApplicationResponseView(
         applicant_id=interaction.user.id,
         guild_id=guild.id,
@@ -120,20 +346,15 @@ async def send_application_to_admins(interaction: discord.Interaction, position:
         reason=reason
     )
     
-    # Отправляем всем админам с нужными ролями
-    sent_count = 0
-    
+    # Отправляем админам
     for role_id in APPLICATION_MANAGER_ROLES:
         role = guild.get_role(role_id)
         if role:
             for member in role.members:
                 try:
                     await member.send(embed=embed, view=view)
-                    sent_count += 1
-                except Exception as e:
-                    print(f"Не удалось отправить {member.name}: {e}")
-    
-    print(f"✅ Заявка отправлена {sent_count} админам")
+                except:
+                    pass
 
 class ApplicationResponseView(View):
     """Кнопки для ответа на заявку"""
@@ -148,79 +369,57 @@ class ApplicationResponseView(View):
         self.reason = reason
     
     async def has_permission(self, user: discord.User) -> bool:
-        """Проверка прав через сервер"""
-        # Получаем сервер
         guild = bot.get_guild(self.guild_id)
         if not guild:
             return False
         
-        # Получаем участника сервера
         member = guild.get_member(user.id)
         if not member:
             return False
         
-        # Проверяем наличие нужных ролей
         for role_id in APPLICATION_MANAGER_ROLES:
             if member.get_role(role_id):
                 return True
         
-        # Проверка на администратора (на всякий случай)
         return member.guild_permissions.administrator
     
     @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="accept_app")
     async def accept_application(self, interaction: discord.Interaction, button: Button):
-        # Проверяем права через сервер
         if not await self.has_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав для принятия заявок! Нужна специальная роль на сервере.", ephemeral=True)
+            await interaction.response.send_message("❌ У вас нет прав для принятия заявок!", ephemeral=True)
             return
         
-        # Получаем сервер
         guild = bot.get_guild(self.guild_id)
         if not guild:
             await interaction.response.send_message("❌ Сервер не найден!", ephemeral=True)
             return
         
-        # Ищем пользователя на сервере
         member = guild.get_member(self.applicant_id)
         if not member:
             await interaction.response.send_message("❌ Пользователь не найден на сервере!", ephemeral=True)
             return
         
-        # Выдаем роль
         role = guild.get_role(APPLICANT_ROLE_ID)
         if role:
             await member.add_roles(role)
             
-            # Уведомляем пользователя
             try:
-                await member.send(f"✅ Поздравляем! Ваша заявка на должность **{self.position}** принята! Вам выдана роль.")
+                await member.send(f"✅ Поздравляем! Ваша заявка на должность **{self.position}** принята!")
             except:
                 pass
             
-            # Отвечаем админу
-            await interaction.response.send_message(f"✅ Заявка принята! Пользователю выдана роль.", ephemeral=True)
+            await interaction.response.send_message(f"✅ Заявка принята!", ephemeral=True)
             
-            # Отключаем кнопки
             for item in self.children:
                 item.disabled = True
             await interaction.message.edit(view=self)
-        else:
-            await interaction.response.send_message("❌ Роль для выдачи не найдена!", ephemeral=True)
     
     @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="reject_app")
     async def reject_application(self, interaction: discord.Interaction, button: Button):
-        # Проверяем права через сервер
         if not await self.has_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав для отказа в заявках! Нужна специальная роль на сервере.", ephemeral=True)
+            await interaction.response.send_message("❌ У вас нет прав для отказа в заявках!", ephemeral=True)
             return
         
-        # Получаем сервер
-        guild = bot.get_guild(self.guild_id)
-        if not guild:
-            await interaction.response.send_message("❌ Сервер не найден!", ephemeral=True)
-            return
-        
-        # Уведомляем пользователя
         try:
             member = await bot.fetch_user(self.applicant_id)
             await member.send(f"❌ К сожалению, ваша заявка на должность **{self.position}** отклонена.")
@@ -229,7 +428,6 @@ class ApplicationResponseView(View):
         
         await interaction.response.send_message("❌ Заявка отклонена", ephemeral=True)
         
-        # Отключаем кнопки
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
@@ -379,7 +577,7 @@ async def create_ticket(interaction: discord.Interaction, ticket_type: str):
     except Exception as e:
         await interaction.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
-# ========== КОМАНДЫ ==========
+# ========== КОМАНДЫ ДЛЯ АДМИНОВ ==========
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup(ctx):
@@ -455,7 +653,8 @@ async def rename_ticket(ctx, *, new_name: str):
 async def on_ready():
     print(f"✅ Бот {bot.user} запущен!")
     print(f"📁 Категория тикетов ID: {TICKET_CATEGORY_ID}")
-    print(f"👥 STAFF ролей: {len(STAFF_ROLES)}")
+    print(f"📢 Канал наказаний ID: {PUNISHMENT_CHANNEL_ID}")
+    print(f"👥 MOD ролей: {len(MOD_ROLES)}")
     
     bot.add_view(TicketPanelView())
     bot.add_view(ApplicationView())
@@ -470,7 +669,6 @@ if __name__ == "__main__":
     token = os.getenv('DISCORD_BOT_TOKEN')
     if not token:
         print("❌ Ошибка: Не найден токен бота!")
-        print("📌 Установите переменную окружения DISCORD_BOT_TOKEN")
         exit(1)
     
     bot.run(token)

@@ -15,6 +15,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # ID из вашего сервера
 TICKET_PANEL_CHANNEL_ID = 1477835412012793856  # Канал для панели
 TICKET_CATEGORY_ID = 1477835280315842792      # Категория для тикетов
+GUILD_ID = 1477729837597720604  # ID вашего сервера (нужно заменить на реальный)
 
 # Роли персонала
 STAFF_ROLES = [
@@ -28,6 +29,12 @@ STAFF_ROLES = [
 
 # Роль при принятии заявки
 APPLICANT_ROLE_ID = 1477845619874856991
+
+# Роли для приема заявок (только эти могут принимать/отклонять)
+APPLICATION_MANAGER_ROLES = [
+    1477729837597720607,  # Роль для приема заявок
+    1477828744390512711,  # Роль для приема заявок
+]
 
 # Хранилище активных тикетов
 active_tickets = {}
@@ -99,49 +106,82 @@ async def send_application_to_admins(interaction: discord.Interaction, position:
     embed.add_field(name="🎂 Возраст", value=age, inline=True)
     embed.add_field(name="⏰ На сервере", value=playtime, inline=True)
     embed.add_field(name="💭 Причина", value=reason, inline=False)
+    embed.add_field(name="🆔 Сервер", value=guild.name, inline=False)
     embed.set_footer(text="Нажмите кнопки ниже для принятия/отказа")
     
-    # Создаем кнопки для админов
-    view = ApplicationResponseView(interaction.user.id, position, name, age, playtime, reason)
+    # Создаем кнопки для админов с информацией о сервере
+    view = ApplicationResponseView(
+        applicant_id=interaction.user.id,
+        guild_id=guild.id,
+        position=position,
+        name=name,
+        age=age,
+        playtime=playtime,
+        reason=reason
+    )
     
     # Отправляем всем админам с нужными ролями
     sent_count = 0
-    target_role_ids = [1477729837597720607, 1477828744390512711]
     
-    for role_id in target_role_ids:
+    for role_id in APPLICATION_MANAGER_ROLES:
         role = guild.get_role(role_id)
         if role:
             for member in role.members:
                 try:
                     await member.send(embed=embed, view=view)
                     sent_count += 1
-                except:
-                    pass  # Игнорируем если не можем отправить ЛС
+                except Exception as e:
+                    print(f"Не удалось отправить {member.name}: {e}")
     
     print(f"✅ Заявка отправлена {sent_count} админам")
 
 class ApplicationResponseView(View):
     """Кнопки для ответа на заявку"""
-    def __init__(self, applicant_id: int, position: str, name: str, age: str, playtime: str, reason: str):
+    def __init__(self, applicant_id: int, guild_id: int, position: str, name: str, age: str, playtime: str, reason: str):
         super().__init__(timeout=None)
         self.applicant_id = applicant_id
+        self.guild_id = guild_id
         self.position = position
         self.name = name
         self.age = age
         self.playtime = playtime
         self.reason = reason
     
+    async def has_permission(self, user: discord.User) -> bool:
+        """Проверка прав через сервер"""
+        # Получаем сервер
+        guild = bot.get_guild(self.guild_id)
+        if not guild:
+            return False
+        
+        # Получаем участника сервера
+        member = guild.get_member(user.id)
+        if not member:
+            return False
+        
+        # Проверяем наличие нужных ролей
+        for role_id in APPLICATION_MANAGER_ROLES:
+            if member.get_role(role_id):
+                return True
+        
+        # Проверка на администратора (на всякий случай)
+        return member.guild_permissions.administrator
+    
     @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="accept_app")
     async def accept_application(self, interaction: discord.Interaction, button: Button):
-        # Проверяем, есть ли у админа право
-        if not has_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав для принятия заявок!", ephemeral=True)
+        # Проверяем права через сервер
+        if not await self.has_permission(interaction.user):
+            await interaction.response.send_message("❌ У вас нет прав для принятия заявок! Нужна специальная роль на сервере.", ephemeral=True)
+            return
+        
+        # Получаем сервер
+        guild = bot.get_guild(self.guild_id)
+        if not guild:
+            await interaction.response.send_message("❌ Сервер не найден!", ephemeral=True)
             return
         
         # Ищем пользователя на сервере
-        guild = bot.get_guild(int(os.getenv('DISCORD_GUILD_ID', 0))) or interaction.guild
         member = guild.get_member(self.applicant_id)
-        
         if not member:
             await interaction.response.send_message("❌ Пользователь не найден на сервере!", ephemeral=True)
             return
@@ -169,13 +209,20 @@ class ApplicationResponseView(View):
     
     @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="reject_app")
     async def reject_application(self, interaction: discord.Interaction, button: Button):
-        if not has_permission(interaction.user):
-            await interaction.response.send_message("❌ У вас нет прав для отказа в заявках!", ephemeral=True)
+        # Проверяем права через сервер
+        if not await self.has_permission(interaction.user):
+            await interaction.response.send_message("❌ У вас нет прав для отказа в заявках! Нужна специальная роль на сервере.", ephemeral=True)
+            return
+        
+        # Получаем сервер
+        guild = bot.get_guild(self.guild_id)
+        if not guild:
+            await interaction.response.send_message("❌ Сервер не найден!", ephemeral=True)
             return
         
         # Уведомляем пользователя
         try:
-            member = bot.get_user(self.applicant_id)
+            member = await bot.fetch_user(self.applicant_id)
             await member.send(f"❌ К сожалению, ваша заявка на должность **{self.position}** отклонена.")
         except:
             pass
@@ -186,15 +233,6 @@ class ApplicationResponseView(View):
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
-
-def has_permission(user: discord.User) -> bool:
-    """Проверка прав для обработки заявок"""
-    # Для ЛС проверяем по ID пользователя или ролям
-    if isinstance(user, discord.Member):
-        for role_id in [1477729837597720607, 1477828744390512711]:
-            if user.get_role(role_id):
-                return True
-    return False
 
 # ========== КЛАССЫ ДЛЯ ТИКЕТОВ ==========
 class TicketSelect(Select):

@@ -32,13 +32,13 @@ STAFF_ROLES = [
     1478170909436022924,
 ]
 
-# Роли для модерации (от меньших к большим)
+# Иерархия модераторов (от меньшего к большему)
 MOD_ROLES_HIERARCHY = [
-    1477827889557672106,  # Младший модератор (самый младший)
+    1477827889557672106,  # Младший модератор
     1477828744390512711,  # Модератор
     1477729837597720607,  # Старший модератор
     1477828939551473786,  # Администратор
-    1478170909436022924,  # Гл. администратор (самый старший)
+    1478170909436022924,  # Гл. администратор
 ]
 
 # Для обратной совместимости
@@ -62,7 +62,24 @@ active_tickets = {}
 # Хранилище наказаний
 punishments_db = {}
 
-# ========== ПРОВЕРКА ПРАВ И ИЕРАРХИИ ==========
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+def get_guild():
+    """Получить сервер"""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        # Если сервер не найден по ID, берем первый доступный
+        for g in bot.guilds:
+            guild = g
+            break
+    return guild
+
+async def get_member(user_id: int):
+    """Получить участника по ID"""
+    guild = get_guild()
+    if not guild:
+        return None
+    return guild.get_member(user_id)
+
 def get_mod_level(member: discord.Member) -> int:
     """Получить уровень модератора (чем меньше число, тем выше роль)"""
     for level, role_id in enumerate(MOD_ROLES_HIERARCHY):
@@ -72,11 +89,7 @@ def get_mod_level(member: discord.Member) -> int:
 
 async def check_mod_dm(user_id: int) -> tuple:
     """Проверка прав модератора через ЛС"""
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return False, "Сервер не найден"
-    
-    member = guild.get_member(user_id)
+    member = await get_member(user_id)
     if not member:
         return False, "Вы не найдены на сервере"
     
@@ -84,10 +97,26 @@ async def check_mod_dm(user_id: int) -> tuple:
     
     for role_id in MOD_ROLES:
         if role_id in user_roles:
-            role = guild.get_role(role_id)
+            role = member.guild.get_role(role_id)
             return True, f"Роль {role.name if role else 'модератора'} найдена"
     
     return False, "У вас нет роли модератора"
+
+def has_mod_role(user):
+    """Проверка наличия модераторской роли"""
+    if not user:
+        return False
+    
+    if isinstance(user, discord.Interaction):
+        user = user.user
+    
+    if not hasattr(user, 'guild') or not user.guild:
+        return False
+    
+    for role_id in MOD_ROLES:
+        if user.get_role(role_id):
+            return True
+    return False
 
 def can_punish(moderator: discord.Member, target: discord.Member) -> tuple:
     """Проверка, может ли модератор наказать цель"""
@@ -120,27 +149,11 @@ def can_punish(moderator: discord.Member, target: discord.Member) -> tuple:
     else:
         return False, "❌ Нельзя наказать вышестоящего модератора"
 
-def has_mod_role(interaction_or_ctx):
-    """Проверка наличия модераторской роли"""
-    if isinstance(interaction_or_ctx, discord.Interaction):
-        user = interaction_or_ctx.user
-    else:
-        user = interaction_or_ctx.author
-    
-    if not user:
-        return False
-    
-    if user.guild:
-        for role_id in MOD_ROLES:
-            if user.get_role(role_id):
-                return True
-    return False
-
 # ========== КОМАНДА !text ==========
 @bot.command()
 async def text(ctx, *, message: str = None):
     """Отправить текст от имени бота и удалить команду"""
-    if not has_mod_role(ctx):
+    if not has_mod_role(ctx.author):
         await ctx.send("❌ У вас нет прав модератора!")
         return
     
@@ -196,7 +209,7 @@ class ModMainMenu(View):
 
 async def show_user_list(interaction: discord.Interaction):
     """Показать список пользователей"""
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     if not guild:
         await interaction.followup.send("❌ Сервер не найден!", ephemeral=True)
         return
@@ -275,7 +288,7 @@ class UserSelectMenu(Select):
     
     async def callback(self, interaction: discord.Interaction):
         user_id = int(self.values[0])
-        guild = bot.get_guild(GUILD_ID)
+        guild = get_guild()
         member = guild.get_member(user_id)
         
         if not member:
@@ -297,7 +310,7 @@ class UserSelectMenu(Select):
 
 async def show_punishment_menu(interaction: discord.Interaction, action: str):
     """Показать меню выбора пользователя"""
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     if not guild:
         await interaction.response.send_message("❌ Сервер не найден!", ephemeral=True)
         return
@@ -375,10 +388,10 @@ async def show_warn_modal(interaction: discord.Interaction, member: discord.Memb
 # ========== ИСПОЛНЕНИЕ НАКАЗАНИЙ ==========
 async def execute_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
     """Выполнить мут"""
-    # Проверка иерархии
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     moderator = guild.get_member(interaction.user.id)
     
+    # Проверка иерархии
     can_punish, msg = can_punish(moderator, member)
     if not can_punish:
         await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
@@ -448,10 +461,10 @@ async def execute_mute(interaction: discord.Interaction, member: discord.Member,
 
 async def execute_ban(interaction: discord.Interaction, member: discord.Member, reason: str):
     """Выполнить бан"""
-    # Проверка иерархии
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     moderator = guild.get_member(interaction.user.id)
     
+    # Проверка иерархии
     can_punish, msg = can_punish(moderator, member)
     if not can_punish:
         await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
@@ -487,10 +500,10 @@ async def execute_ban(interaction: discord.Interaction, member: discord.Member, 
 
 async def execute_warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     """Выдать варн"""
-    # Проверка иерархии
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     moderator = guild.get_member(interaction.user.id)
     
+    # Проверка иерархии
     can_punish, msg = can_punish(moderator, member)
     if not can_punish:
         await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
@@ -535,8 +548,9 @@ async def execute_warn(interaction: discord.Interaction, member: discord.Member,
 @bot.command()
 async def menum(ctx):
     """Открыть меню модератора (работает в ЛС и на сервере)"""
+    # Проверяем права
     if ctx.guild:
-        if not has_mod_role(ctx):
+        if not has_mod_role(ctx.author):
             await ctx.send("❌ У вас нет прав модератора!")
             return
         
@@ -552,6 +566,7 @@ async def menum(ctx):
             await ctx.send(f"❌ {message}")
             return
     
+    # Отправляем меню в ЛС
     embed = discord.Embed(
         title="🛡️ Меню модератора",
         description="Выберите действие:",
@@ -568,7 +583,7 @@ async def menum(ctx):
 @bot.command()
 async def mute(ctx, member: discord.Member = None, duration: str = None, *, reason: str = None):
     """Выдать мут участнику"""
-    if not has_mod_role(ctx):
+    if not has_mod_role(ctx.author):
         await ctx.send("❌ У вас нет прав модератора!")
         return
     
@@ -596,6 +611,7 @@ async def mute(ctx, member: discord.Member = None, duration: str = None, *, reas
         await ctx.send("❌ У бота нет прав на мут!")
         return
     
+    # Конвертация времени
     time_multipliers = {"m": 60, "h": 3600, "d": 86400}
     unit = duration[-1]
     
@@ -614,8 +630,10 @@ async def mute(ctx, member: discord.Member = None, duration: str = None, *, reas
         timeout_until = discord.utils.utcnow() + datetime.timedelta(seconds=seconds)
         await member.timeout(timeout_until, reason=reason)
         
+        # Увеличиваем счетчик варнов
         punishments_db[f"warns_{member.id}"] = punishments_db.get(f"warns_{member.id}", 0) + 1
         
+        # Отправляем в канал наказаний
         punishment_channel = guild.get_channel(PUNISHMENT_CHANNEL_ID)
         if punishment_channel:
             embed = discord.Embed(
@@ -629,6 +647,7 @@ async def mute(ctx, member: discord.Member = None, duration: str = None, *, reas
             embed.add_field(name="⏰ Срок", value=duration, inline=True)
             await punishment_channel.send(embed=embed)
         
+        # Отправляем в ЛС нарушителю
         try:
             user_embed = discord.Embed(
                 title="🔇 Вы получили мут",
@@ -650,7 +669,7 @@ async def mute(ctx, member: discord.Member = None, duration: str = None, *, reas
 @bot.command()
 async def ban(ctx, member: discord.Member = None, *, reason: str = None):
     """Забанить участника"""
-    if not has_mod_role(ctx):
+    if not has_mod_role(ctx.author):
         await ctx.send("❌ У вас нет прав модератора!")
         return
     
@@ -700,7 +719,7 @@ async def ban(ctx, member: discord.Member = None, *, reason: str = None):
 @bot.command()
 async def warn(ctx, member: discord.Member = None, *, reason: str = None):
     """Выдать предупреждение"""
-    if not has_mod_role(ctx):
+    if not has_mod_role(ctx.author):
         await ctx.send("❌ У вас нет прав модератора!")
         return
     
@@ -722,6 +741,7 @@ async def warn(ctx, member: discord.Member = None, *, reason: str = None):
     
     guild = ctx.guild
     
+    # Увеличиваем счетчик варнов
     punishments_db[f"warns_{member.id}"] = punishments_db.get(f"warns_{member.id}", 0) + 1
     warn_count = punishments_db[f"warns_{member.id}"]
     
@@ -756,7 +776,7 @@ async def warn(ctx, member: discord.Member = None, *, reason: str = None):
 @bot.command()
 async def unmute(ctx, member: discord.Member = None, *, reason: str = "Не указана"):
     """Снять мут с участника"""
-    if not has_mod_role(ctx):
+    if not has_mod_role(ctx.author):
         await ctx.send("❌ У вас нет прав модератора!")
         return
     
@@ -812,7 +832,7 @@ async def unmute(ctx, member: discord.Member = None, *, reason: str = "Не ук
 @bot.command()
 async def check(ctx, member: discord.Member = None):
     """Проверить наказания пользователя"""
-    if not has_mod_role(ctx):
+    if not has_mod_role(ctx.author):
         await ctx.send("❌ У вас нет прав модератора!")
         return
     
@@ -821,11 +841,6 @@ async def check(ctx, member: discord.Member = None):
         return
     
     guild = ctx.guild
-    moderator = ctx.author
-    
-    # Проверяем иерархию для информации (просто предупреждаем)
-    can_punish, msg = can_punish(moderator, member)
-    hierarchy_info = f"\n⚠️ {msg}" if not can_punish else ""
     
     embed = discord.Embed(
         title=f"📋 Информация о {member.name}",
@@ -837,6 +852,7 @@ async def check(ctx, member: discord.Member = None):
     embed.add_field(name="📅 Зашел на сервер", value=member.joined_at.strftime("%d.%m.%Y %H:%M"), inline=True)
     embed.add_field(name="📝 Ролей", value=str(len(member.roles)-1), inline=True)
     
+    # Проверка активного мута
     if member.timed_out_until:
         mute_until = member.timed_out_until
         time_left = mute_until - discord.utils.utcnow()
@@ -851,6 +867,7 @@ async def check(ctx, member: discord.Member = None):
     else:
         embed.add_field(name="🔇 Активный мут", value="Нет", inline=True)
     
+    # Статистика варнов
     warn_count = punishments_db.get(f"warns_{member.id}", 0)
     embed.add_field(
         name="⚠️ Варны", 
@@ -858,19 +875,20 @@ async def check(ctx, member: discord.Member = None):
         inline=True
     )
     
-    # Уровень модератора
-    mod_level = get_mod_level(member)
-    if mod_level < len(MOD_ROLES_HIERARCHY):
-        role_names = []
-        for role_id in MOD_ROLES_HIERARCHY:
-            if member.get_role(role_id):
-                role = guild.get_role(role_id)
-                role_names.append(role.name if role else f"Роль {role_id}")
-        embed.add_field(name="🛡️ Роль модератора", value=", ".join(role_names), inline=False)
+    # Информация о модераторских ролях
+    mod_roles = []
+    for role_id in MOD_ROLES_HIERARCHY:
+        if member.get_role(role_id):
+            role = guild.get_role(role_id)
+            mod_roles.append(role.name if role else f"Роль {role_id}")
+    
+    if mod_roles:
+        embed.add_field(name="🛡️ Роли модератора", value=", ".join(mod_roles), inline=False)
     
     embed.add_field(name="🔨 Бан", value="Нет (участник на сервере)", inline=True)
     embed.set_footer(text=f"ID: {member.id}")
     
+    # Отправляем в ЛС модератору
     try:
         await ctx.author.send(embed=embed)
         if ctx.guild:
@@ -1233,7 +1251,7 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
     if not LOG_CHANNEL_ID:
         return
     
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     if not guild:
         return
     
@@ -1271,12 +1289,13 @@ async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
 @bot.event
 async def on_ready():
     print(f"✅ Бот {bot.user} запущен!")
-    print(f"📁 Сервер ID: {GUILD_ID}")
-    print(f"👥 MOD ролей: {len(MOD_ROLES_HIERARCHY)}")
-    print(f"📋 Иерархия модераторов:")
     
-    guild = bot.get_guild(GUILD_ID)
+    guild = get_guild()
     if guild:
+        print(f"📁 Найден сервер: {guild.name} (ID: {guild.id})")
+        print(f"👥 MOD ролей: {len(MOD_ROLES_HIERARCHY)}")
+        print(f"📋 Иерархия модераторов:")
+        
         for i, role_id in enumerate(MOD_ROLES_HIERARCHY):
             role = guild.get_role(role_id)
             if role:
@@ -1285,6 +1304,9 @@ async def on_ready():
                 print(f"  {i}. Роль {role_id} не найдена на сервере!")
     else:
         print(f"❌ Сервер {GUILD_ID} не найден!")
+        print(f"📋 Доступные серверы:")
+        for g in bot.guilds:
+            print(f"  • {g.name} (ID: {g.id})")
     
     bot.add_view(TicketPanelView())
     bot.add_view(ApplicationView())

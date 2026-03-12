@@ -21,6 +21,9 @@ TICKET_CATEGORY_ID = 1477835280315842792
 GUILD_ID = 1477729837597720604
 PUNISHMENT_CHANNEL_ID = 1477829936516694156
 
+# Роль для получения по реакции
+USER_ROLE_ID = 1477844344861098154
+
 # Роли персонала
 STAFF_ROLES = [
     1477825566408310974,
@@ -162,6 +165,51 @@ async def text(ctx, *, message: str = None):
         return
     
     await ctx.send(message)
+    await ctx.message.delete()
+
+# ========== КОМАНДА !role (система ролей по реакциям) ==========
+class RoleButton(discord.ui.Button):
+    """Кнопка для получения роли"""
+    def __init__(self, role_id: int, emoji: str, label: str):
+        super().__init__(style=discord.ButtonStyle.primary, label=label, emoji=emoji, custom_id=f"role_{role_id}")
+        self.role_id = role_id
+    
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = interaction.user
+        role = guild.get_role(self.role_id)
+        
+        if not role:
+            await interaction.response.send_message("❌ Роль не найдена!", ephemeral=True)
+            return
+        
+        if role in member.roles:
+            await member.remove_roles(role)
+            await interaction.response.send_message(f"✅ Роль {role.mention} убрана!", ephemeral=True)
+        else:
+            await member.add_roles(role)
+            await interaction.response.send_message(f"✅ Роль {role.mention} выдана!", ephemeral=True)
+
+class RoleView(discord.ui.View):
+    """View с кнопками для получения ролей"""
+    def __init__(self):
+        super().__init__(timeout=None)
+        # Добавляем кнопку для получения роли пользователя
+        self.add_item(RoleButton(USER_ROLE_ID, "✅", "Получить роль Пользователь"))
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def role(ctx):
+    """Создать сообщение для получения роли"""
+    embed = discord.Embed(
+        title="📋 Получение роли",
+        description="Нажмите на кнопку ниже, чтобы получить роль **Пользователь**!\n\n"
+                   "Эта роль дает доступ к основным каналам сервера.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="Нажмите еще раз чтобы убрать роль")
+    
+    await ctx.send(embed=embed, view=RoleView())
     await ctx.message.delete()
 
 # ========== СИСТЕМА МЕНЮ В ЛС ==========
@@ -1302,16 +1350,26 @@ async def on_ready():
                 print(f"  {i}. {role.name} ({role_id})")
             else:
                 print(f"  {i}. Роль {role_id} не найдена на сервере!")
+        
+        # Проверяем роль пользователя
+        user_role = guild.get_role(USER_ROLE_ID)
+        if user_role:
+            print(f"✅ Роль пользователя найдена: {user_role.name}")
+        else:
+            print(f"❌ Роль пользователя {USER_ROLE_ID} не найдена!")
     else:
         print(f"❌ Сервер {GUILD_ID} не найден!")
         print(f"📋 Доступные серверы:")
         for g in bot.guilds:
             print(f"  • {g.name} (ID: {g.id})")
     
+    # Добавляем все View для постоянных сообщений
     bot.add_view(TicketPanelView())
     bot.add_view(ApplicationView())
     bot.add_view(ModMainMenu())
+    bot.add_view(RoleView())
     
+    # Восстанавливаем активные тикеты
     for channel_id, data in active_tickets.items():
         channel = bot.get_channel(channel_id)
         if channel:
